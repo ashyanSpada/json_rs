@@ -58,33 +58,39 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     }
 
     serde::forward_to_deserialize_any! {
-        bool u8 u16 u32 u64 i8 i16 i32 i64 f32 f64 char str string seq
-        bytes byte_buf map unit newtype_struct struct
+        bool u8 u16 u32 u64 i8 i16 i32 i64 f32 f64 i128 char str string seq
+        bytes byte_buf map unit newtype_struct
         ignored_any unit_struct tuple_struct tuple option identifier
     }
 
-    // fn deserialize_struct<V>(
-    //     self,
-    //     name: &'static str,
-    //     fields: &'static [&'static str],
-    //     visitor: V,
-    // ) -> std::result::Result<V::Value, Self::Error>
-    // where
-    //     V: de::Visitor<'de>,
-    // {
-    //     todo!()
-    // }
+    fn deserialize_struct<V>(
+        self,
+        name: &'static str,
+        fields: &'static [&'static str],
+        visitor: V,
+    ) -> std::result::Result<V::Value, Self::Error>
+    where
+        V: de::Visitor<'de>,
+    {
+        if self.peek()?.is_left_curly() || self.peek()?.is_left_bracket() {
+            return self.deserialize_any(visitor);
+        }
+        Err(Error::InvalidStructString())
+    }
 
     fn deserialize_enum<V>(
         self,
         name: &'static str,
         variants: &'static [&'static str],
         visitor: V,
-    ) -> std::result::Result<V::Value, Self::Error>
+    ) -> Result<V::Value>
     where
         V: de::Visitor<'de>,
     {
-        todo!()
+        if self.next()?.is_left_curly() {
+            return visitor.visit_enum(VariantAccess::new(self));
+        }
+        Err(Error::InvalidEnumString())
     }
 }
 
@@ -183,7 +189,7 @@ impl<'de, 'a> de::Deserializer<'de> for MapKey<'de, 'a> {
         match self.de.next()? {
             Token::String(s, _) => match s {
                 MaybeString::Escaped(s) => visitor.visit_string(s),
-                MaybeString::NotEscaped(s) => visitor.visit_str(s),
+                MaybeString::NotEscaped(s) => visitor.visit_borrowed_str(s),
             },
             _ => Err(Error::JSONKeyMustBeString()),
         }
@@ -260,6 +266,60 @@ impl<'de, 'a> de::Deserializer<'de> for MapKey<'de, 'a> {
     }
 }
 
+struct VariantAccess<'de, 'a> {
+    de: &'a mut Deserializer<'de>,
+}
+
+impl<'de, 'a> VariantAccess<'de, 'a> {
+    fn new(de: &'a mut Deserializer<'de>) -> Self {
+        VariantAccess { de: de }
+    }
+}
+
+impl<'de, 'a> de::EnumAccess<'de> for VariantAccess<'de, 'a> {
+    type Error = Error;
+
+    type Variant = Self;
+
+    fn variant_seed<V>(self, seed: V) -> Result<(V::Value, Self::Variant)>
+    where
+        V: de::DeserializeSeed<'de>,
+    {
+        let val = seed.deserialize(&mut *self.de)?;
+        self.de.expect(":".to_string())?;
+        Ok((val, self))
+    }
+}
+
+impl<'de, 'a> de::VariantAccess<'de> for VariantAccess<'de, 'a> {
+    type Error = Error;
+
+    fn unit_variant(self) -> Result<()> {
+        de::Deserialize::deserialize(self.de)
+    }
+
+    fn newtype_variant_seed<T>(self, seed: T) -> Result<T::Value>
+    where
+        T: de::DeserializeSeed<'de>,
+    {
+        seed.deserialize(self.de)
+    }
+
+    fn tuple_variant<V>(self, len: usize, visitor: V) -> Result<V::Value>
+    where
+        V: de::Visitor<'de>,
+    {
+        de::Deserializer::deserialize_seq(self.de, visitor)
+    }
+
+    fn struct_variant<V>(self, fields: &'static [&'static str], visitor: V) -> Result<V::Value>
+    where
+        V: de::Visitor<'de>,
+    {
+        de::Deserializer::deserialize_struct(self.de, "", fields, visitor)
+    }
+}
+
 macro_rules! deserialize_integer_key {
     ($method:ident => $visit:ident) => {
         fn $method<V>(self, visitor: V) -> Result<V::Value>
@@ -297,17 +357,35 @@ where
 #[test]
 fn test() {
     #[derive(Deserialize, Debug)]
+    enum User2<'a> {
+        Test {
+            fingerprint: &'a str,
+            location: &'a str,
+            age: i128,
+        },
+    }
+    #[derive(Deserialize, Debug)]
     struct User<'a> {
         fingerprint: &'a str,
         location: &'a str,
+        age: i128,
     }
     let j = "
-             {
+    {
+            \"Test\": {
                  \"fingerprint\": \"0xF9BA143B95FF6D82\",
-                 \"location\": \"Menlo Park, CA\"
-             }";
-    match from_str::<User>(j) {
-        Ok(v) => println!("user is {}, {}", v.fingerprint, v.location),
+                 \"location\": \"Menlo Park, CA\",
+                 \"age\": 280
+             }
+            }";
+    match from_str::<User2>(j) {
+        Ok(v) => match v {
+            User2::Test {
+                fingerprint,
+                location,
+                age,
+            } => println!("user is {}, {}, {}", fingerprint, location, age),
+        },
         Err(e) => println!("{}", e),
     }
 }

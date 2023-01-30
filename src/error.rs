@@ -29,6 +29,8 @@ pub enum Error {
 
     OpNotExist(String),
     JSONKeyMustBeString(),
+    InvalidStructString(),
+    InvalidEnumString(),
 }
 
 impl ser::Error for Error {

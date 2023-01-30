@@ -1,6 +1,6 @@
-// pub mod de;
-#[macro_use]
 pub mod de;
+pub mod ser;
+#[macro_use]
 pub mod error;
 mod token;
 pub mod tokenizer;
